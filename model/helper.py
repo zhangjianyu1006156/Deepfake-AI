@@ -59,7 +59,7 @@ def show_image(img, title=None, ax=None):
             plt.title(title)
         plt.pause(0.001)  
 
-def setup_data_loaders(root_dir, batch_size, num_workers=4):
+def setup_data_loaders(root_dir, test_dir, batch_size, num_workers=4):
     # Define the transformation to be applied to each image
     augmented_transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -69,37 +69,30 @@ def setup_data_loaders(root_dir, batch_size, num_workers=4):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     
-    # Load the dataset from the directory with the specified transform
-    dataset = datasets.ImageFolder(root=root_dir, transform=augmented_transform)
+    # Load the training and validation dataset from the directory with the specified transform
+    train_val_dataset = datasets.ImageFolder(root=root_dir, transform=augmented_transform)
+    
+    # Load the test dataset
+    test_dataset = datasets.ImageFolder(root=test_dir, transform=augmented_transform)
 
-    # Calculate sizes for train, validation, and test sets
-    train_size = int(0.7 * len(dataset))
-    val_size = int(0.15 * len(dataset))
-    test_size = len(dataset) - train_size - val_size
+    # Calculate sizes for train and validation sets (using full train_val_dataset)
+    train_size = int(0.875 * len(train_val_dataset))  # 70% of the original dataset size, since test is now separate
+    val_size = len(train_val_dataset) - train_size
 
-    # Extract labels for stratification
-    targets = [s[1] for s in dataset.samples]
+    # Extract labels for stratification of train and validation
+    targets = [s[1] for s in train_val_dataset.samples]
 
-    # Split the dataset into train+val and test sets
-    train_val_idx, test_idx = train_test_split(
+    # Split the train_val_dataset into training and validation sets
+    train_idx, val_idx = train_test_split(
         range(len(targets)),
-        test_size=test_size / len(dataset),
+        test_size=val_size,
         stratify=targets,
         random_state=42
     )
 
-    # Split train+val into training and validation sets
-    train_idx, val_idx = train_test_split(
-        train_val_idx,
-        test_size=val_size / (train_size + val_size),
-        stratify=[targets[i] for i in train_val_idx],
-        random_state=42
-    )
-
     # Creating subsets for each split
-    train_dataset = Subset(dataset, train_idx)
-    validation_dataset = Subset(dataset, val_idx)
-    test_dataset = Subset(dataset, test_idx)
+    train_dataset = Subset(train_val_dataset, train_idx)
+    validation_dataset = Subset(train_val_dataset, val_idx)
 
     # Creating data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -349,8 +342,12 @@ def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, 
     metrics['save_path'] = save_path
     return metrics
 
+# Create the dataloders
+root_directory = '../processed_dataset_frame/processed_dataset_frame'
+test_directory = '../processed_dataset_frame/processed_dataset_frame_test'
+
 def random_search_CNN(hyperparameters, num_trials, base_save_path='../models_weight_CNN'):
-    train_loader, validation_loader, test_loader = setup_data_loaders('../processed_dataset_frame/processed_dataset_frame', batch_size=16)
+    train_loader, validation_loader, test_loader = setup_data_loaders(root_directory, test_directory, batch_size=16)
     
     if not os.path.exists(base_save_path):
         os.makedirs(base_save_path)
@@ -385,7 +382,7 @@ def random_search_CNN(hyperparameters, num_trials, base_save_path='../models_wei
     return results, best_model_path
 
 def random_search_MLP(hyperparameters, num_trials, base_save_path='../models_weight_MLP'):
-    train_loader, validation_loader, test_loader = setup_data_loaders('../processed_dataset_frame/processed_dataset_frame', batch_size=16)
+    train_loader, validation_loader, test_loader = setup_data_loaders(root_directory, test_directory, batch_size=16)
     
     if not os.path.exists(base_save_path):
         os.makedirs(base_save_path)
@@ -423,7 +420,7 @@ def random_search_MLP(hyperparameters, num_trials, base_save_path='../models_wei
     return results, best_model_path
 
 def random_search_CNNLSTM(hyperparameters, num_trials, base_save_path='../models_weight_CNNLSTM'):
-    train_loader, validation_loader, test_loader = setup_data_loaders('../processed_dataset_frame/processed_dataset_frame', batch_size=16)
+    train_loader, validation_loader, test_loader = setup_data_loaders(root_directory, test_directory, batch_size=16)
     
     if not os.path.exists(base_save_path):
         os.makedirs(base_save_path)
