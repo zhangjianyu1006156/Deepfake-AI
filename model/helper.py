@@ -17,6 +17,7 @@ from torchvision.models.feature_extraction import create_feature_extractor
 from sklearn.metrics import precision_score, recall_score, roc_auc_score, confusion_matrix, multilabel_confusion_matrix
 from sklearn.preprocessing import label_binarize
 from models import CNN_for_DeepFake, MLP_for_DeepFake, CNN_LSTM_for_DeepFake
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Use GPU if available, else use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,7 +60,7 @@ def show_image(img, title=None, ax=None):
             plt.title(title)
         plt.pause(0.001)  
 
-def setup_data_loaders(root_dir, test_dir, batch_size, num_workers=4):
+def setup_data_loaders(root_dir, test_dir, batch_size, num_workers=2):
     # Define the transformation to be applied to each image
     augmented_transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -105,11 +106,11 @@ def setup_data_loaders(root_dir, test_dir, batch_size, num_workers=4):
 
 
 ## Model Training and Evaluation ##
-def train_and_evaluate(model, train_loader, validation_loader, test_loader, epochs=10, lr=0.0001):
+def train_and_evaluate(model, train_loader, validation_loader, test_loader, epochs=10, lr=0.0001, early_stop_patience=5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
-    # Initialize Optimizer and Loss Function
+    # Initialize Optimizer, Loss Function, and Learning Rate Scheduler
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), 
                            lr=lr,
@@ -117,12 +118,17 @@ def train_and_evaluate(model, train_loader, validation_loader, test_loader, epoc
                            betas=(0.9, 0.999),
                            eps=1e-8,
                            amsgrad=True)
+    # Learning Rate Scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
     
+    # Early stopping initialization
+    best_val_loss = float('inf')
+    early_stop_counter = 0
+
     # Initialize lists to store accuracies and losses
     train_accuracies = []
     test_accuracies = []
     validation_accuracies = []
-
     train_losses = []
     test_losses = []
     validation_losses = []
@@ -160,6 +166,7 @@ def train_and_evaluate(model, train_loader, validation_loader, test_loader, epoc
         correct_validation = 0
         total_validation = 0
         validation_loss = 0
+
         with torch.no_grad():
             for inputs, labels in validation_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
@@ -179,6 +186,20 @@ def train_and_evaluate(model, train_loader, validation_loader, test_loader, epoc
         validation_accuracy = 100 * correct_validation / total_validation
         validation_accuracies.append(validation_accuracy)
         validation_losses.append(validation_loss / len(validation_loader))
+
+        # Learning Rate Scheduler
+        scheduler.step(validation_loss / len(validation_loader))
+        
+        # Early Stopping Check
+        if validation_loss / len(validation_loader) < best_val_loss:
+            best_val_loss = validation_loss / len(validation_loader)
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+            print(f"No improvement in validation loss for {early_stop_counter} epochs...")
+            if early_stop_counter == early_stop_patience:
+                print("Stopping early due to lack of improvement in validation loss.")
+                break
 
         # Evaluate on the test set
         test_loss = 0 
@@ -215,7 +236,7 @@ def train_and_evaluate(model, train_loader, validation_loader, test_loader, epoc
 ## Model Training and Evaluation ##
 
 ## Hyperparameter Search ##
-def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=10, lr=0.0001, save_path='best_model.pt'):
+def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=10, lr=0.0001, save_path='best_model.pt', early_stop_patience=5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
@@ -227,8 +248,12 @@ def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, 
                            betas=(0.9, 0.999),
                            eps=1e-8,
                            amsgrad=True)
-    
-    best_validation_accuracy = 0  
+    # Learning Rate Scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+
+    # Early stopping initialization
+    best_val_loss = float('inf')
+    early_stop_counter = 0
     
     # Initialize metrics storage
     metrics = {
@@ -290,6 +315,21 @@ def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, 
         validation_accuracy = 100 * correct_validation / total_validation
         validation_loss_avg = validation_loss / len(validation_loader)
 
+        # Learning Rate Scheduler
+        scheduler.step(validation_loss / len(validation_loader))
+        
+        # Early Stopping Check
+        if validation_loss / len(validation_loader) < best_val_loss:
+            best_val_loss = validation_loss / len(validation_loader)
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+            print(f"No improvement in validation loss for {early_stop_counter} epochs...")
+            if early_stop_counter == early_stop_patience:
+                print("Stopping early due to lack of improvement in validation loss.")
+                break
+
+        # Evaluate on the test set
         test_loss = 0
         correct_test = 0
         total_test = 0
@@ -312,17 +352,15 @@ def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, 
         test_loss_avg = test_loss / len(test_loader)
 
         # Update metrics if better validation accuracy is found
-        if validation_accuracy > best_validation_accuracy:
-            best_validation_accuracy = validation_accuracy
-            # Save the model weights
-            torch.save(model.state_dict(), save_path)
-            # Update metrics with the new best values
+        if validation_accuracy > metrics['best_validation_accuracy']:
             metrics.update({
                 'best_validation_accuracy': validation_accuracy,
                 'best_validation_loss': validation_loss_avg,
                 'corresponding_test_accuracy': test_accuracy,
                 'corresponding_test_loss': test_loss_avg,
+                'save_path': save_path
             })
+            torch.save(model.state_dict(), save_path)
 
         # Always update these metrics after each epoch
         metrics.update({
@@ -338,13 +376,11 @@ def train_and_evaluate_new(model, train_loader, validation_loader, test_loader, 
               f"Test Accuracy: {test_accuracy:.2f}%")
         print("--------------------------------------------------------------")
     
-    # After the loop, save the path in metrics for reference
-    metrics['save_path'] = save_path
     return metrics
 
 # Create the dataloders
 root_directory = '../processed_dataset_frame/processed_dataset_frame'
-test_directory = '../processed_dataset_frame/processed_dataset_frame_test'
+test_directory = '../processed_dataset_frame_test'
 
 def random_search_CNN(hyperparameters, num_trials, base_save_path='../models_weight_CNN'):
     train_loader, validation_loader, test_loader = setup_data_loaders(root_directory, test_directory, batch_size=16)
@@ -368,7 +404,7 @@ def random_search_CNN(hyperparameters, num_trials, base_save_path='../models_wei
         # Initialize and train the model
         print(f"Trial {trial+1}: Training with lr={lr}, dropout={dropout}, fc_units={fc_units}")
         model = CNN_for_DeepFake(dropout_rate=dropout, fc_units=fc_units)
-        metrics = train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=10, lr=lr, save_path=save_path)
+        metrics = train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=20, lr=lr, save_path=save_path)
         
         # Append metrics to results list
         results.append(metrics)
@@ -406,7 +442,7 @@ def random_search_MLP(hyperparameters, num_trials, base_save_path='../models_wei
         # Initialize and train the model
         print(f"Trial {trial+1}: Training with lr={lr}, dropout={dropout}, architecture={architecture}")
         model = MLP_for_DeepFake(input_features=input_features, dropout_rate=dropout, hidden_units=architecture)
-        metrics = train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=10, lr=lr, save_path=save_path)
+        metrics = train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=20, lr=lr, save_path=save_path)
         
         # Append metrics to results list
         results.append(metrics)
@@ -444,7 +480,7 @@ def random_search_CNNLSTM(hyperparameters, num_trials, base_save_path='../models
         print(f"Trial {trial+1}: Training with lr={lr}, dropout={dropout}, fc_units={fc_units}, lstm_units={lstm_units}, num_layers={num_layers}")
         model = CNN_LSTM_for_DeepFake(dropout_rate=dropout, fc_units=fc_units, lstm_units=lstm_units, num_layers=num_layers)
         model.to(device)
-        metrics = train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=10, lr=lr, save_path=save_path)
+        metrics = train_and_evaluate_new(model, train_loader, validation_loader, test_loader, epochs=20, lr=lr, save_path=save_path)
 
         # Append metrics to results list
         results.append(metrics)
