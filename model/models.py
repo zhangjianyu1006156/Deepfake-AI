@@ -3,6 +3,13 @@ import torchvision
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as transforms
+import pandas as pd
+from PIL import Image
+import os
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torchvision.models import resnext50_32x4d, ResNeXt50_32X4D_Weights
 
 class MLP_for_DeepFake(nn.Module):
     def __init__(self, input_features, dropout_rate, hidden_units):
@@ -101,3 +108,28 @@ class CNN_LSTM_for_DeepFake(nn.Module):
         return x
 
     
+class RESNET_LSTM_for_DeepFake(nn.Module):
+    def __init__(self, num_classes):
+        super(RESNET_LSTM_for_DeepFake, self).__init__()
+        self.resnext = nn.Sequential(*list(resnext50_32x4d(weights=ResNeXt50_32X4D_Weights.DEFAULT).children())[:-2])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.lstm = nn.LSTM(2048, 512, num_layers=1, batch_first=True)
+        self.fc = nn.Linear(512, num_classes)
+
+
+    def forward(self, x, lengths):
+        batch_size, timesteps, C, H, W = x.size()
+        c_in = x.view(batch_size * timesteps, C, H, W)
+        c_out = self.resnext(c_in)
+        c_out = self.avgpool(c_out)
+        c_out = c_out.view(c_out.size(0), -1)
+        r_in = c_out.view(batch_size, timesteps, -1)
+
+        # Pack the sequence, process through LSTM, and then unpack
+        packed_input = pack_padded_sequence(r_in, lengths, batch_first=True, enforce_sorted=False)
+        packed_output, _ = self.lstm(packed_input)
+        r_out, _ = pad_packed_sequence(packed_output, batch_first=True)
+        r_out = r_out[:, -1, :]  # Get the last timestep outputs
+
+        output = self.fc(r_out)
+        return output

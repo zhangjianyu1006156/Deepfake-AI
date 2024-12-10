@@ -14,12 +14,19 @@ from torchvision.transforms import ToTensor, Compose, Normalize
 from torchvision.datasets import MNIST
 from PIL import Image
 from torchvision.models.feature_extraction import create_feature_extractor
-from sklearn.metrics import precision_score, recall_score, roc_auc_score, confusion_matrix, multilabel_confusion_matrix
 from sklearn.preprocessing import label_binarize
+#from models import CNN_for_DeepFake, MLP_for_DeepFake, CNN_LSTM_for_DeepFake
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torchvision.models import resnext50_32x4d, ResNeXt50_32X4D_Weights
+import torchvision.transforms as transforms
+from torchvision.datasets import ImageFolder
+import csv
+import pandas as pd
+from torch.nn.utils.rnn import pad_sequence
 
 # Use GPU if available, else use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
 
 # Original transformation
 original_transform = transforms.Compose([
@@ -31,7 +38,7 @@ original_transform = transforms.Compose([
 # Augmented transformation with horizontal flip and random rotation
 augmented_transform = transforms.Compose([
     transforms.Resize((224, 224)),
-    transforms.RandomHorizontalFlip(p=1.0), 
+    transforms.RandomHorizontalFlip(p=0.5), 
     # Randomly rotate images in the range (-15, 15) degrees
     transforms.RandomRotation(degrees=15),   
     transforms.ToTensor(),
@@ -39,7 +46,7 @@ augmented_transform = transforms.Compose([
 ])
 
 # Load the dataset from the root directory
-raw_dataset = datasets.ImageFolder(root='dataset', transform=None)
+raw_dataset = datasets.ImageFolder(root='processed_dataset_frame/processed_dataset_frame', transform=None)
 
 # Access a raw image and its label directly
 raw_img, label = raw_dataset[0]
@@ -77,167 +84,339 @@ show_image(img_augmented_tensor, title='Augmented Image', ax=axs[1])
 
 #plt.show()
 
-dataset = datasets.ImageFolder(root='dataset', transform=augmented_transform)
+# Create the dataloders
+root_directory = 'processed_dataset_frame/processed_dataset_frame'
+test_directory = 'processed_dataset_frame_test'
+batch_size = 16
 
-# Splitting the dataset
-train_size = int(0.7 * len(dataset)) 
-val_size = int(0.15 * len(dataset)) 
-test_size = len(dataset) - train_size - val_size 
+# Path to the dataset root
+dataset_path = 'processed_dataset_frame/processed_dataset_frame'
 
-# Extracting labels from the dataset
-targets = [s[1] for s in dataset.samples]  
+# Define the image transformations
+im_size = 112
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
 
-# Splitting the dataset into train+val and test sets
-train_val_idx, test_idx = train_test_split(
-    range(len(targets)),
-    test_size=test_size / len(dataset),  
-    stratify=targets,
-    random_state=42  
-)
+transforms = transforms.Compose([
+    transforms.Resize((im_size, im_size)),  # Resize all images to a fixed size
+    transforms.ToTensor(),                  # Convert images to PyTorch tensors
+    transforms.Normalize(mean, std)         # Normalize the tensor images
+])
 
-# Splitting train+val into training and validation sets
-train_idx, val_idx = train_test_split(
-    train_val_idx,
-    test_size=val_size / (train_size + val_size),  
-    stratify=[targets[i] for i in train_val_idx],
-    random_state=42  
-)
+# Loading the dataset using ImageFolder
+dataset = ImageFolder(dataset_path, transform=transforms)
 
-# Creating subsets for each split
-train_dataset = Subset(dataset, train_idx)
-validation_dataset = Subset(dataset, val_idx)
-test_dataset = Subset(dataset, test_idx)
+# Splitting the dataset into train and validation subsets
+train_size = int(0.8 * len(dataset))
+valid_size = len(dataset) - train_size
+train_dataset, valid_dataset = random_split(dataset, [train_size, valid_size])
 
-# Creating data loaders
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-validation_loader = DataLoader(validation_dataset, batch_size=16, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+# Creating data loaders for training and validation sets
+train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=2)
+valid_loader = DataLoader(valid_dataset, batch_size=4, shuffle=False, num_workers=2)
 
-class CNN_for_LungCancer(nn.Module):
-    def __init__(self, dropout_rate, fc_units):
-        super(CNN_for_LungCancer, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)  
-        self.act1 = nn.ReLU()
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout1 = nn.Dropout(dropout_rate)  
-        
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)  
-        self.act2 = nn.ReLU()
-        self.dropout2 = nn.Dropout(dropout_rate)   
-        
-        self.fc1 = nn.Linear(in_features=64 * 56 * 56, out_features=fc_units)
-        self.fc2 = nn.Linear(fc_units, 3)
-        self.dropout4 = nn.Dropout(dropout_rate)
+# Example: Checking class names and some dataset info
+print("Classes:", dataset.classes)
+print("Number of train samples:", len(train_dataset))
+print("Number of validation samples:", len(valid_dataset))
 
+# Configuration
+image_dir = 'processed_dataset_frame/processed_dataset_frame'  # Update this path
+batch_size = 8
 
-    def forward(self, x):
-        x = self.pool(self.bn1(self.act1(self.conv1(x))))
-        x = self.dropout1(x)
-        x = self.pool(self.bn2(self.act2(self.conv2(x))))
-        x = self.dropout2(x)
-        x = torch.flatten(x, 1)
-        x = self.dropout4(self.fc1(x))
-        x = self.fc2(x)
+# Define the image transformations
+im_size = 112
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
 
-        return x
+transform = transforms.Compose([
+    transforms.Resize((im_size, im_size)),  # Resize all images to a fixed size
+    transforms.ToTensor(),                  # Convert images to PyTorch tensors
+    transforms.Normalize(mean, std)         # Normalize the tensor images
+])
+
+def load_image(filepath):
+    with Image.open(filepath) as img:
+        return transform(img)
+
+def prepare_data(root_dir):
+    data, labels = [], []
+    categories = {'real': 1, 'fake': 0}
+
+    for category in ['real', 'fake']:
+        dir_path = os.path.join(root_dir, category)
+        video_dict = {}
+
+        # Collect files by the first four digits of their names
+        for file in os.listdir(dir_path):
+            if file.endswith('.jpg'):
+                video_id = file[:4]  # The first four digits of the filename
+                if video_id not in video_dict:
+                    video_dict[video_id] = []
+                video_dict[video_id].append(os.path.join(dir_path, file))
+
+        # Sort files, load images, and store sequences
+        for video_id, video_files in video_dict.items():
+            try:
+                sorted_files = sorted(
+                    video_files,
+                    key=lambda x: int(os.path.basename(x).split('_frame')[1].split('.jpg')[0])
+                )
+            except ValueError as e:
+                print(f"Error parsing file name from: {x}")
+                continue  # Skip this file or handle it according to your policy
+
+            loaded_images = [load_image(fp) for fp in sorted_files]
+            data.append(torch.stack(loaded_images))
+            labels.append(categories[category])
+
+            # Print example sequence details
+            print(f"Sequence ID: {video_id}")
+            print(f"Category: {category}")
+            print(f"Number of Frames: {len(sorted_files)}")
+            print(f"Sample Frames: {sorted_files[:5]}")  # Print first 5 frame filenames for checking
+
+    # Convert labels to tensor
+    Y = torch.tensor(labels)
     
-model = CNN_for_LungCancer(dropout_rate=0.5, fc_units=64)
-model.to(device)  
+    # Split into train and test sets
+    return train_test_split(data, Y, test_size=0.2)
 
-# Initialize lists to store accuracies and losses
-train_accuracies = []
-test_accuracies = []
-validation_accuracies = []
+# Usage
+X_train, X_test, y_train, y_test = prepare_data(image_dir)
 
-train_losses = []
-test_losses = []
-validation_losses = []
 
-def train_and_evaluate(model, train_loader, validation_loader, test_loader, epochs=10, lr=0.0001):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    
-    # Initialize Optimizer and Loss Function
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), 
-                           lr=lr,
-                           weight_decay=1e-4, 
-                           betas=(0.9, 0.999),
-                           eps=1e-8,
-                           amsgrad=True)
-    
-    for epoch in range(epochs):
-        # Training phase
+# Define image transformations
+im_size = 112
+transform = transforms.Compose([
+    transforms.Resize((im_size, im_size)),  # Resize all images to a fixed size
+    transforms.ToTensor(),                  # Convert images to PyTorch tensors
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+def load_image(filepath):
+    with Image.open(filepath) as img:
+        return transform(img)
+
+def prepare_data(root_dir, csv_path):
+    sequences, labels, metadata = [], [], []
+    categories = {'real': 1, 'fake': 0}
+
+    # Open a CSV file to save the metadata
+    with open(csv_path, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['sequence_id', 'category', 'frame_count', 'sample_frames'])
+
+        for category in ['real', 'fake']:
+            dir_path = os.path.join(root_dir, category)
+            video_dict = {}
+
+            # Collect files by the first four digits of their names
+            for file in os.listdir(dir_path):
+                if file.endswith('.jpg'):
+                    video_id = file[:4]  # The first four digits of the filename
+                    if video_id not in video_dict:
+                        video_dict[video_id] = []
+                    video_dict[video_id].append(os.path.join(dir_path, file))
+
+            # Sort files, load images, and store sequences
+            for video_id, video_files in video_dict.items():
+                try:
+                    sorted_files = sorted(
+                        video_files,
+                        key=lambda x: int(os.path.basename(x).split('_frame')[1].split('.jpg')[0])
+                    )
+                except ValueError as e:
+                    print(f"Error parsing file name from: {x}")
+                    continue  # Skip this file or handle it according to your policy
+
+                loaded_images = [load_image(fp) for fp in sorted_files]
+                sequences.append(torch.stack(loaded_images))
+                labels.append(categories[category])
+                metadata_entry = {
+                    'sequence_id': video_id,
+                    'category': category,
+                    'frame_count': len(sorted_files),
+                    'sample_frames': '; '.join(sorted_files[:5])
+                }
+                metadata.append(metadata_entry)
+
+                # Write to CSV
+                writer.writerow([video_id, category, len(sorted_files), '; '.join(sorted_files[:5])])
+
+                # Optionally print the metadata for verification
+                print(metadata_entry)
+
+    return sequences, labels, metadata
+
+# Usage: Specify the path where you want to save the CSV
+sequences, labels, metadata = prepare_data('processed_dataset_frame/processed_dataset_frame', 'metadata.csv')
+
+
+
+
+class SequenceModel(nn.Module):
+    def __init__(self, num_classes):
+        super(SequenceModel, self).__init__()
+        self.resnext = nn.Sequential(*list(resnext50_32x4d(weights=ResNeXt50_32X4D_Weights.DEFAULT).children())[:-2])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.lstm = nn.LSTM(2048, 512, num_layers=1, batch_first=True)
+        self.fc = nn.Linear(512, num_classes)
+
+
+    def forward(self, x, lengths):
+        batch_size, timesteps, C, H, W = x.size()
+        c_in = x.view(batch_size * timesteps, C, H, W)
+        c_out = self.resnext(c_in)
+        c_out = self.avgpool(c_out)
+        c_out = c_out.view(c_out.size(0), -1)
+        r_in = c_out.view(batch_size, timesteps, -1)
+
+        # Pack the sequence, process through LSTM, and then unpack
+        packed_input = pack_padded_sequence(r_in, lengths, batch_first=True, enforce_sorted=False)
+        packed_output, _ = self.lstm(packed_input)
+        r_out, _ = pad_packed_sequence(packed_output, batch_first=True)
+        r_out = r_out[:, -1, :]  # Get the last timestep outputs
+
+        output = self.fc(r_out)
+        return output
+
+
+def collate_fn(batch):
+    sequences, labels, lengths = zip(*batch)
+    # Convert list of sequences where each sequence is a list of tensors to a list of tensor sequences
+    sequences = [torch.stack(seq) for seq in sequences]  # Stack each sequence to make 3D tensor
+    sequences_padded = pad_sequence(sequences, batch_first=True, padding_value=0)
+    labels = torch.tensor(labels)
+    lengths = torch.tensor(lengths)
+    return sequences_padded, labels, lengths
+
+
+class FrameSequenceDataset(Dataset):
+    def __init__(self, csv_file, transform=None, indices=None):
+        self.data = pd.read_csv(csv_file)
+        if indices is not None:
+            self.data = self.data.iloc[indices]
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        row = self.data.iloc[index]
+        frames = row['sample_frames'].split('; ')
+        sequence = [self.load_frame(frame) for frame in frames]
+        label = int(row['category'] == 'real')
+        if self.transform:
+            sequence = [self.transform(Image.open(frame).convert('RGB')) for frame in frames]
+        return sequence, label, len(sequence)
+
+    def load_frame(self, frame_path):
+        img = Image.open(frame_path).convert('RGB')  # Ensure it's always RGB
+        return img
+
+
+
+
+# Initialize the Model
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = SequenceModel(num_classes=2).to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device, checkpoint_path='best_model.pth'):
+    best_val_loss = float('inf')  # Initialize the best validation loss to infinity
+
+    for epoch in range(num_epochs):
         model.train()
         train_loss = 0
-        correct_train = 0
-        total_train = 0
-        
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
+        correct = 0
+        total = 0
+
+        for inputs, labels, lengths in train_loader:
+            inputs, labels, lengths = inputs.to(device), labels.to(device), lengths.to(device)
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(inputs, lengths)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
             _, predicted = torch.max(outputs.data, 1)
-            total_train += labels.size(0)
-            correct_train += (predicted == labels).sum().item()
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
-        train_accuracy = 100 * correct_train / total_train
-        train_accuracies.append(train_accuracy)
-        train_losses.append(train_loss / len(train_loader))
+        train_accuracy = 100 * correct / total
 
-        # Validation phase
-        model.eval()
-        correct_validation = 0
-        total_validation = 0
-        validation_loss = 0
-        with torch.no_grad():
-            for inputs, labels in validation_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                validation_loss += loss.item()
-                _, predicted = torch.max(outputs.data, 1)
-                total_validation += labels.size(0)
-                correct_validation += (predicted == labels).sum().item()
+        # Validate after every epoch
+        val_loss, val_accuracy = validate_model(model, val_loader, criterion, device)
+        
+        # Print training and validation results
+        print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.2f}%, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy*100:.2f}%')
 
-        validation_accuracy = 100 * correct_validation / total_validation
-        validation_accuracies.append(validation_accuracy)
-        validation_losses.append(validation_loss / len(validation_loader))
+        # Check if the current validation loss is the best we've seen so far
+        if val_loss < best_val_loss:
+            print(f'Validation loss decreased ({best_val_loss:.6f} --> {val_loss:.6f}). Saving model ...')
+            best_val_loss = val_loss
+            # Save model state dictionary
+            torch.save(model.state_dict(), checkpoint_path)
 
-        # Evaluate on the test set
-        test_loss = 0 
-        correct_test = 0
-        total_test = 0
-        with torch.no_grad():
-            for inputs, labels in test_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                test_loss += loss.item()
-                _, predicted = torch.max(outputs.data, 1)
-                total_test += labels.size(0)
-                correct_test += (predicted == labels).sum().item()
+def validate_model(model, loader, criterion, device):
+    model.eval()
+    val_loss = 0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for inputs, labels, lengths in loader:
+            inputs, labels, lengths = inputs.to(device), labels.to(device), lengths.to(device)
+            outputs = model(inputs, lengths)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
-        test_accuracy = 100 * correct_test / total_test
-        test_accuracies.append(test_accuracy)
-        test_losses.append(test_loss / len(test_loader))
+    val_accuracy = correct / total
+    return val_loss / len(loader), val_accuracy
 
-        print(f"Epoch {epoch+1}, Train Loss: {train_loss/len(train_loader):.4f}, "
-              f"Validation Loss: {validation_loss/len(validation_loader):.4f}, "
-              f"Test Loss: {test_loss/len(test_loader):.4f}, "
-              f"Train Accuracy: {train_accuracy:.2f}%, "
-              f"Validation Accuracy: {validation_accuracy:.2f}%, "
-              f"Test Accuracy: {test_accuracy:.2f}%")
-        print("--------------------------------------------------------------")
+# Example usage:
+data_indices = np.arange(len(pd.read_csv('metadata.csv')))
+np.random.shuffle(data_indices)
+split = int(0.8 * len(data_indices))  # 80% for training, 20% for validation
 
-train_and_evaluate(model, train_loader, validation_loader, test_loader, epochs=10, lr=1e-3)
+train_indices = data_indices[:split]
+val_indices = data_indices[split:]
+
+# Prepare Dataset and DataLoader
+train_dataset = FrameSequenceDataset('metadata.csv', transform=transform, indices=train_indices)
+val_dataset = FrameSequenceDataset('metadata.csv', transform=transform, indices=val_indices)
+
+train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, collate_fn=collate_fn)
+
+# Initialize the Model and Set Device
+model = SequenceModel(num_classes=2).to(device)
+
+# Setup Loss Function and Optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Path to save the best model
+checkpoint_path = 'best_model.pth'
+
+# Start Training
+train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device=device, checkpoint_path=checkpoint_path)
+
+
+
+
+
+
+
+
+
+
+
 
 # Save the model weights
 model_path = 'model_state.pth'
